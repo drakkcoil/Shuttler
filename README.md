@@ -138,6 +138,15 @@ Shuttler/
 - Passwords are stored securely in the macOS Keychain (when implemented)
 - No data is transmitted over unencrypted connections for SFTP/SCP
 
+## Current To-Do
+
+The following features and fixes are currently in progress:
+
+1. **Multi-select isn't working** - Fix file selection to allow selecting multiple files at once
+2. **Quick Look / Preview file isn't working** - Implement Quick Look preview for remote files
+3. **Edit remote file isn't working** - Add ability to edit files directly on remote servers
+4. **SCP MFA support** - SCP connections to servers that use MFA (such as Cisco Duo) that prompt for a response aren't working
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
