@@ -1,15 +1,19 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct TransferHUD: View {
     @ObservedObject var manager: TransferManager = .shared
+    @State private var dragOffset: CGSize = .zero
 
     var body: some View {
         Group {
             if manager.transfers.isEmpty { EmptyView() }
             else {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
                     HStack {
-                        Label("Transfers", systemImage: "arrow.up.arrow.down")
+                        Label("Transfers", systemImage: "arrow.up.arrow.down.circle")
                             .font(.headline)
                         Spacer()
                         Button { withAnimation { manager.isExpanded.toggle() } } label: {
@@ -25,18 +29,25 @@ struct TransferHUD: View {
                         transferRow(t)
                     }
                 }
-                .padding(12)
+                .padding(AppTheme.Spacing.m)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(radius: 6)
+                .frame(maxWidth: 360)
+                .offset(x: dragOffset.width, y: dragOffset.height)
+                .gesture(
+                    DragGesture()
+                        .onChanged { value in
+                            dragOffset = value.translation
+                        }
+                        .onEnded { value in
+                            // Keep the offset so the HUD stays in the new position
+                            dragOffset = value.translation
+                        }
+                )
             }
         }
-        .frame(maxWidth: 360)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .padding()
-        .background(
-            Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding()
-        )
         .ignoresSafeArea()
     }
 
@@ -51,6 +62,14 @@ struct TransferHUD: View {
                 Text("\(Int(t.progress * 100))%")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                Button {
+                    manager.cancel(id: t.id)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel transfer")
             }
             ProgressView(value: t.progress)
                 .progressViewStyle(.linear)

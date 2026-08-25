@@ -9,6 +9,7 @@ import Foundation
 import NIOSSH
 import NIOCore
 import NIOPosix
+import NIOFoundationCompat
 
 // MARK: - SCP Types
 
@@ -18,7 +19,7 @@ private struct SCPDownloadResult {
 }
 
 // Protocol for cancellable transfer handlers
-private protocol CancellableTransferHandler: AnyObject {
+protocol CancellableTransferHandler: AnyObject {
     func cancel()
 }
 
@@ -34,11 +35,11 @@ final class NativeSCPClient: CancellableTransport {
     
     // Method to cancel a transfer (called by RemoteBrowserViewModel)
     func cancelTransfer(id: UUID) {
-        transferLock.lock()
-        defer { transferLock.unlock() }
-        if let handler = activeTransfers[id] {
-            handler.cancel()
-            activeTransfers.removeValue(forKey: id)
+        transferLock.withLock {
+            if let handler = activeTransfers[id] {
+                handler.cancel()
+                activeTransfers.removeValue(forKey: id)
+            }
         }
     }
     
@@ -49,7 +50,7 @@ final class NativeSCPClient: CancellableTransport {
         // Trim hostname and username to prevent DNS resolution issues
         let trimmedHost = connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedUser = connection.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.auth = SSHAuthConfig(host: trimmedHost, port: connection.port, username: trimmedUser, privateKeyPath: keyPath, password: connection.password)
+        self.auth = SSHAuthConfig(host: trimmedHost, port: connection.port, username: trimmedUser, privateKeyPath: keyPath, password: connection.getPassword())
     }
     
     deinit {
@@ -62,10 +63,14 @@ final class NativeSCPClient: CancellableTransport {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.eventLoopGroup = group
         
+        // Handler to monitor SSH protocol messages for autopush detection
+        let authMonitor = AuthenticationMonitorHandler(outputHandler: outputHandler)
+        
         let clientAuthDelegate = SCPClientAuthDelegate(
             username: auth.username,
             password: auth.password,
-            privateKeyPath: auth.privateKeyPath
+            privateKeyPath: auth.privateKeyPath,
+            authMonitor: authMonitor
         )
         
         let serverAuthDelegate = AcceptAllHostKeysDelegate()
@@ -74,6 +79,8 @@ final class NativeSCPClient: CancellableTransport {
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     let sync = channel.pipeline.syncOperations
+                    // Add authentication monitor BEFORE SSH handler to intercept all messages
+                    try sync.addHandler(authMonitor, position: .first)
                     let ssh = NIOSSHHandler(
                         role: .client(
                             .init(
@@ -97,14 +104,41 @@ final class NativeSCPClient: CancellableTransport {
         
         // Wait for SSH handshake to complete by trying a simple operation with timeout
         // This ensures authentication completes before we proceed
+        // Increased timeout to 90 seconds to allow for MFA autopush approval
+        // The AuthenticationMonitorHandler will detect autopush messages if they appear
         do {
-            let _ = try await withTimeout(seconds: 30) {
+            let _ = try await withTimeout(seconds: 90) {
                 try await self.executeCommand(command: "echo ok", channel: channel)
             }
             outputHandler?("SSH authentication successful")
         } catch {
             try? await channel.close().get()
-            throw TransferError(message: "SSH authentication failed: \(error.localizedDescription)")
+            // Check if autopush was detected but authentication still failed
+            if authMonitor.detectedAutopush {
+                if authMonitor.detectedSuccess {
+                    // Autopush succeeded but something else failed - unusual
+                    throw TransferError(message: "MFA autopush was approved, but authentication still failed. Error: \(error.localizedDescription)")
+                } else {
+                    // Autopush detected but not yet approved - timeout waiting for approval
+                    throw TransferError(message: "MFA autopush detected but not approved within timeout. Please approve the push on your device and try again. Error: \(error.localizedDescription)")
+                }
+            }
+            
+            // Check if error suggests interactive authentication (MFA) is needed
+            let errorMsg = error.localizedDescription.lowercased()
+            if errorMsg.contains("permission denied") || errorMsg.contains("authentication failed") {
+                // This likely means password auth failed, possibly due to MFA requirement
+                // NIOSSH doesn't support keyboard-interactive authentication at all.
+                // Even servers with Duo autopush (which doesn't require keyboard input) won't work
+                // because the server still uses the keyboard-interactive protocol method, and
+                // NIOSSH's authentication delegate API only allows password or public key offers.
+                // There's no way to tell NIOSSH to proceed with keyboard-interactive, even with empty responses.
+                throw TransferError(message: "SSH authentication failed. This server requires keyboard-interactive authentication for MFA (e.g., Cisco Duo). Even with autopush enabled (no keyboard input needed), NIOSSH cannot handle keyboard-interactive authentication because it's not supported by the library's authentication API. Error: \(error.localizedDescription)")
+            } else if errorMsg.contains("keyboard-interactive") || errorMsg.contains("duo") || errorMsg.contains("passcode") || errorMsg.contains("verification code") || errorMsg.contains("interactive authentication required") {
+                throw TransferError(message: "This server requires interactive MFA (keyboard-interactive authentication, e.g., Cisco Duo). Native SCP does not support interactive authentication. Please enable 'Use system SSH transport' in your connection settings or switch to SFTP with system SSH. Error: \(error.localizedDescription)")
+            } else {
+                throw TransferError(message: "SSH authentication failed: \(error.localizedDescription)")
+            }
         }
     }
     
@@ -136,13 +170,24 @@ final class NativeSCPClient: CancellableTransport {
         let baseDirForParsing: String
         if directory.rawValue.isEmpty || directory.rawValue == "/" {
             dirForCommand = "."
-            baseDirForParsing = "/"
+            // When listing root, we're actually in the home directory
+            // Use empty string so paths are constructed as relative (just the name)
+            baseDirForParsing = ""
         } else {
-            dirForCommand = directory.rawValue
-            baseDirForParsing = directory.rawValue
+            // If path starts with "/" but is not just "/", it's a path relative to home directory
+            // Strip the leading "/" for the command (since we're in home directory)
+            // But keep the full path for baseDirForParsing so breadcrumbs work
+            if directory.rawValue.hasPrefix("/") && directory.rawValue.count > 1 {
+                // Path like "/cinemabox.org" - strip leading "/" for command
+                dirForCommand = String(directory.rawValue.dropFirst())
+                baseDirForParsing = directory.rawValue
+            } else {
+                dirForCommand = directory.rawValue
+                baseDirForParsing = directory.rawValue
+            }
         }
         
-        print("🔍 Executing: ls -la \(dirForCommand) in directory '\(baseDirForParsing)'")
+        print("🔍 Executing: ls -la \(dirForCommand) in directory '\(baseDirForParsing.isEmpty ? "/" : baseDirForParsing)'")
         let escapedDir = shellEscape(dirForCommand)
         let command = "ls -la \(escapedDir)"
         let result = try await executeCommand(command: command, channel: channel)
@@ -158,7 +203,10 @@ final class NativeSCPClient: CancellableTransport {
         }
         
         let items = parseLsLongNative(result, baseDirectory: baseDirForParsing)
-        print("📁 Parsed \(items.count) items from directory '\(baseDirForParsing)'")
+        print("📁 Parsed \(items.count) items from directory '\(baseDirForParsing.isEmpty ? "/" : baseDirForParsing)'")
+        if !items.isEmpty {
+            print("   First item path: '\(items[0].path)'")
+        }
         return items
     }
     
@@ -212,6 +260,90 @@ final class NativeSCPClient: CancellableTransport {
         let escapedOldPath = shellEscape(item.path)
         let escapedNewPath = shellEscape(newPath)
         let command = "mv \(escapedOldPath) \(escapedNewPath)"
+        let _ = try await executeCommand(command: command, channel: channel)
+    }
+    
+    func createDirectory(name: String, in directory: RemotePath) async throws {
+        guard let channel = sshChannel else {
+            throw TransferError(message: "Not connected")
+        }
+        
+        let baseDir = directory.rawValue
+        let newPath = baseDir.hasSuffix("/") ? "\(baseDir)\(name)" : "\(baseDir)/\(name)"
+        let escapedPath = shellEscape(newPath)
+        let command = "mkdir -p \(escapedPath)"
+        let _ = try await executeCommand(command: command, channel: channel)
+    }
+    
+    func copy(item: RemoteItem, to destination: RemotePath) async throws {
+        guard let channel = sshChannel else {
+            throw TransferError(message: "Not connected")
+        }
+        
+        // Use cp command for copy
+        let escapedSource = shellEscape(item.path)
+        let destPath = destination.rawValue.hasSuffix("/") 
+            ? "\(destination.rawValue)\(item.name)" 
+            : "\(destination.rawValue)/\(item.name)"
+        let escapedDest = shellEscape(destPath)
+        let command = item.isDirectory ? "cp -r \(escapedSource) \(escapedDest)" : "cp \(escapedSource) \(escapedDest)"
+        let _ = try await executeCommand(command: command, channel: channel)
+    }
+    
+    func move(item: RemoteItem, to destination: RemotePath) async throws {
+        guard let channel = sshChannel else {
+            throw TransferError(message: "Not connected")
+        }
+        
+        // Use mv command for move
+        let escapedSource = shellEscape(item.path)
+        let destPath = destination.rawValue.hasSuffix("/") 
+            ? "\(destination.rawValue)\(item.name)" 
+            : "\(destination.rawValue)/\(item.name)"
+        let escapedDest = shellEscape(destPath)
+        let command = "mv \(escapedSource) \(escapedDest)"
+        let _ = try await executeCommand(command: command, channel: channel)
+    }
+    
+    func duplicate(item: RemoteItem) async throws {
+        guard let channel = sshChannel else {
+            throw TransferError(message: "Not connected")
+        }
+        
+        // Find a unique name in the same directory
+        let directory = RemotePath(rawValue: (item.path as NSString).deletingLastPathComponent)
+        let items = try await list(directory: directory)
+        let baseName = (item.name as NSString).deletingPathExtension
+        let ext = (item.name as NSString).pathExtension
+        var counter = 1
+        var finalName: String
+        repeat {
+            if !ext.isEmpty {
+                finalName = "\(baseName) copy \(counter).\(ext)"
+            } else {
+                finalName = "\(baseName) copy \(counter)"
+            }
+            counter += 1
+        } while items.contains(where: { $0.name == finalName })
+        
+        let destinationPath = directory.rawValue.hasSuffix("/") 
+            ? "\(directory.rawValue)\(finalName)" 
+            : "\(directory.rawValue)/\(finalName)"
+        let escapedSource = shellEscape(item.path)
+        let escapedDest = shellEscape(destinationPath)
+        let command = item.isDirectory ? "cp -r \(escapedSource) \(escapedDest)" : "cp \(escapedSource) \(escapedDest)"
+        let _ = try await executeCommand(command: command, channel: channel)
+    }
+    
+    func changePermissions(item: RemoteItem, permissions: String) async throws {
+        guard let channel = sshChannel else {
+            throw TransferError(message: "Not connected")
+        }
+        
+        // Use chmod command
+        let escapedPath = shellEscape(item.path)
+        let escapedPerms = shellEscape(permissions)
+        let command = "chmod \(escapedPerms) \(escapedPath)"
         let _ = try await executeCommand(command: command, channel: channel)
     }
     
@@ -363,7 +495,14 @@ final class NativeSCPClient: CancellableTransport {
         let filename = localURL.lastPathComponent
         
         // Ensure remote path ends with / for directory
-        let remoteDir = remotePath.hasSuffix("/") ? remotePath : remotePath + "/"
+        // Special case: if path is root "/", use "." (current directory) for SCP
+        // SCP can have issues with root directory, and typically users are in their home directory
+        let remoteDir: String
+        if remotePath == "/" {
+            remoteDir = "."
+        } else {
+            remoteDir = remotePath.hasSuffix("/") ? remotePath : remotePath + "/"
+        }
         let escapedPath = shellEscape(remoteDir)
         let command = "scp -t \(escapedPath)"
         
@@ -371,9 +510,6 @@ final class NativeSCPClient: CancellableTransport {
         if let callback = progressCallback {
             callback(0, fileSize > 0 ? fileSize : 1)
         }
-        
-        // Read file data
-        let fileData = try Data(contentsOf: localURL)
         
         // Format metadata: C<mode> <size> <filename>\n
         // Mode must be in octal format (e.g., 0644, 0755)
@@ -385,7 +521,7 @@ final class NativeSCPClient: CancellableTransport {
         let metadata = "C\(modeString) \(fileSize) \(safeFilename)\n"
         print("📤 SCP: Formatted metadata: mode=\(modeString) (octal), size=\(fileSize), filename=\(safeFilename)")
         
-        try await executeSCPUpload(command: command, channel: channel, metadata: metadata, fileData: fileData, transferId: transferId, progressCallback: progressCallback)
+        try await executeSCPUpload(command: command, channel: channel, metadata: metadata, localURL: localURL, fileSize: fileSize, transferId: transferId, progressCallback: progressCallback)
     }
     
     private func executeSCPDownload(command: String, channel: Channel, transferId: UUID? = nil, progressCallback: ((Int64, Int64) -> Void)? = nil) async throws -> SCPDownloadResult {
@@ -399,21 +535,21 @@ final class NativeSCPClient: CancellableTransport {
                 let handler = SCPDownloadHandler(command: command, resultPromise: resultPromise, progressCallback: progressCallback)
                 
                 // Store handler for cancellation if transferId is provided
-                if let id = transferId {
-                    self.transferLock.lock()
-                    self.activeTransfers[id] = handler
-                    self.transferLock.unlock()
-                    
-                    // Remove from active transfers when done
-                    resultPromise.futureResult.whenComplete { _ in
-                        self.transferLock.lock()
-                        self.activeTransfers.removeValue(forKey: id)
-                        self.transferLock.unlock()
+                let transferIdForCleanup = transferId
+                if let id = transferIdForCleanup {
+                    self.transferLock.withLock {
+                        self.activeTransfers[id] = handler
                     }
                 }
                 
                 resultPromise.futureResult.whenComplete { result in
                     continuation.resume(with: result)
+                    // Remove from active transfers when done
+                    if let id = transferIdForCleanup {
+                        _ = self.transferLock.withLock {
+                            self.activeTransfers.removeValue(forKey: id)
+                        }
+                    }
                 }
                 
                 sshHandler.createChannel(channelPromise) { childChannel, channelType in
@@ -435,7 +571,7 @@ final class NativeSCPClient: CancellableTransport {
         }
     }
     
-    private func executeSCPUpload(command: String, channel: Channel, metadata: String, fileData: Data, transferId: UUID? = nil, progressCallback: ((Int64, Int64) -> Void)? = nil) async throws {
+    private func executeSCPUpload(command: String, channel: Channel, metadata: String, localURL: URL, fileSize: Int64, transferId: UUID? = nil, progressCallback: ((Int64, Int64) -> Void)? = nil) async throws {
         let loop = channel.eventLoop
         
         return try await withCheckedThrowingContinuation { continuation in
@@ -443,24 +579,24 @@ final class NativeSCPClient: CancellableTransport {
                 let channelPromise = channel.eventLoop.makePromise(of: Channel.self)
                 let voidPromise = loop.makePromise(of: Void.self)
                 
-                let handler = SCPUploadHandler(command: command, metadata: metadata, fileData: fileData, completePromise: voidPromise, progressCallback: progressCallback)
+                let handler = SCPUploadHandler(command: command, metadata: metadata, localURL: localURL, fileSize: fileSize, completePromise: voidPromise, progressCallback: progressCallback)
                 
                 // Store handler for cancellation if transferId is provided
-                if let id = transferId {
-                    self.transferLock.lock()
-                    self.activeTransfers[id] = handler
-                    self.transferLock.unlock()
-                    
-                    // Remove from active transfers when done
-                    voidPromise.futureResult.whenComplete { _ in
-                        self.transferLock.lock()
-                        self.activeTransfers.removeValue(forKey: id)
-                        self.transferLock.unlock()
+                let transferIdForCleanup = transferId
+                if let id = transferIdForCleanup {
+                    self.transferLock.withLock {
+                        self.activeTransfers[id] = handler
                     }
                 }
                 
                 voidPromise.futureResult.whenComplete { result in
                     continuation.resume(with: result)
+                    // Remove from active transfers when done
+                    if let id = transferIdForCleanup {
+                        _ = self.transferLock.withLock {
+                            self.activeTransfers.removeValue(forKey: id)
+                        }
+                    }
                 }
                 
                 sshHandler.createChannel(channelPromise) { childChannel, channelType in
@@ -491,49 +627,142 @@ nonisolated private final class SCPClientAuthDelegate: NIOSSHClientUserAuthentic
     private let password: String?
     private let privateKeyPath: String?
     private var authAttempted = false
+    private var passwordAttempted = false
+    weak var authMonitor: AuthenticationMonitorHandler?
     
-    init(username: String, password: String?, privateKeyPath: String?) {
+    init(username: String, password: String?, privateKeyPath: String?, authMonitor: AuthenticationMonitorHandler? = nil) {
         self.username = username
         self.password = password
         self.privateKeyPath = privateKeyPath
+        self.authMonitor = authMonitor
     }
     
     func nextAuthenticationType(
         availableMethods: NIOSSHAvailableUserAuthenticationMethods,
         nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
     ) {
-        // Always complete the promise, even if we can't authenticate
-        defer {
-            authAttempted = true
-        }
-        
-        if authAttempted {
-            // Already tried, fail
-            nextChallengePromise.succeed(nil)
-            return
-        }
-        
-        // Prefer password if available, otherwise try private key
-        if let password = password, availableMethods.contains(.password) {
+        // Try password first if available
+        if let password = password, availableMethods.contains(.password), !passwordAttempted {
+            passwordAttempted = true
+            authMonitor?.passwordAttempted = true
             let offer = NIOSSHUserAuthenticationOffer(
                 username: username,
                 serviceName: "ssh-connection",
                 offer: .password(.init(password: password))
             )
             nextChallengePromise.succeed(offer)
-        } else if let _ = privateKeyPath, availableMethods.contains(.publicKey) {
-            // TODO: Load and parse private key from privateKeyPath
-            // For now, fall through to fail
-            nextChallengePromise.succeed(nil)
-        } else {
-            // No supported auth method available
-            nextChallengePromise.succeed(nil)
+            return
         }
+        
+        // Try private key if available
+        if let keyPath = privateKeyPath, availableMethods.contains(.publicKey), !authAttempted {
+            authAttempted = true
+            do {
+                // Use a local loader instance to avoid actor isolation issues
+                let privateKey = try SSHKeyLoader().loadPrivateKey(from: keyPath)
+                let offer = NIOSSHUserAuthenticationOffer(
+                    username: username,
+                    serviceName: "ssh-connection",
+                    offer: .privateKey(.init(privateKey: privateKey))
+                )
+                nextChallengePromise.succeed(offer)
+                return
+            } catch {
+                print("⚠️ Failed to load private key: \(error.localizedDescription)")
+                nextChallengePromise.succeed(nil)
+                return
+            }
+        }
+        
+        // If password failed, check if auth monitor detected autopush
+        // If autopush is detected, we might be able to wait for it to complete
+        if passwordAttempted {
+            if let monitor = authMonitor, monitor.detectedAutopush {
+                // Autopush detected - wait a bit longer for it to complete
+                // The monitor will handle waiting for "Success. Logging you in..."
+                print("ℹ️ Password authentication failed, but autopush detected. Waiting for MFA approval...")
+                // Don't fail immediately - let the monitor handle it
+                // We'll need to wait and retry or handle this differently
+            }
+            print("ℹ️ Password authentication failed. This may indicate MFA/Duo is required.")
+            print("ℹ️ NIOSSH does not support keyboard-interactive authentication (required for MFA).")
+        }
+        
+        // All methods attempted, fail
+        nextChallengePromise.succeed(nil)
+    }
+    
+}
+
+// MARK: - Authentication Monitor Handler
+
+/// Handler to monitor SSH protocol messages for autopush MFA detection
+/// Note: This may not capture keyboard-interactive messages if NIOSSH doesn't attempt that auth method,
+/// but it's worth trying to detect them in case they appear in the protocol stream.
+@preconcurrency
+nonisolated final class AuthenticationMonitorHandler: ChannelDuplexHandler {
+    typealias InboundIn = ByteBuffer
+    typealias InboundOut = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+    
+    private let outputHandler: ((String) -> Void)?
+    private var buffer = Data()
+    var passwordAttempted = false
+    var detectedAutopush = false
+    var detectedSuccess = false
+    
+    init(outputHandler: ((String) -> Void)?) {
+        self.outputHandler = outputHandler
+    }
+    
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let buffer = self.unwrapInboundIn(data)
+        let data = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes) ?? Data()
+        self.buffer.append(data)
+        
+        // Keep buffer size reasonable (last 4KB should be enough)
+        if self.buffer.count > 4096 {
+            self.buffer = self.buffer.suffix(4096)
+        }
+        
+        // Check for autopush messages in the buffer
+        // These messages are typically sent as part of keyboard-interactive authentication
+        if let text = String(data: self.buffer, encoding: .utf8) {
+            let lowercased = text.lowercased()
+            
+            // Detect autopush message - various formats
+            if (lowercased.contains("autopushing") || lowercased.contains("autopush")) && !detectedAutopush {
+                detectedAutopush = true
+                outputHandler?("MFA autopush detected. Waiting for approval...")
+                print("🔔 Autopush detected in SSH protocol stream")
+            }
+            
+            // Detect success message after autopush
+            if (lowercased.contains("success. logging you in") || 
+                (lowercased.contains("success") && lowercased.contains("logging"))) && 
+                !detectedSuccess && detectedAutopush {
+                detectedSuccess = true
+                outputHandler?("MFA autopush approved. Authentication continuing...")
+                print("✅ Autopush success detected in SSH protocol stream")
+            }
+        }
+        
+        // Pass through to next handler
+        context.fireChannelRead(self.wrapInboundOut(buffer))
+    }
+    
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        // Log if we detected autopush but got an error
+        if detectedAutopush {
+            print("⚠️ Error after autopush detection: \(error)")
+        }
+        context.fireErrorCaught(error)
     }
 }
 
 @preconcurrency
-nonisolated private final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate {
+nonisolated final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate {
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
         // Accept all host keys (not recommended for production, but matches SSHExec behavior)
         validationCompletePromise.succeed(())
@@ -543,7 +772,7 @@ nonisolated private final class AcceptAllHostKeysDelegate: NIOSSHClientServerAut
 // MARK: - Channel Handlers
 
 @preconcurrency
-nonisolated private final class CommandOutputHandler: ChannelDuplexHandler {
+nonisolated final class CommandOutputHandler: ChannelDuplexHandler {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = ByteBuffer
     typealias OutboundIn = ByteBuffer
@@ -554,6 +783,7 @@ nonisolated private final class CommandOutputHandler: ChannelDuplexHandler {
     private var output = Data()
     private var isCompleted = false
     private var exitStatusReceived = false
+    private weak var handlerContext: ChannelHandlerContext?
     
     init(command: String, completePromise: EventLoopPromise<Data>) {
         self.command = command
@@ -576,13 +806,18 @@ nonisolated private final class CommandOutputHandler: ChannelDuplexHandler {
     }
     
     func handlerAdded(context: ChannelHandlerContext) {
+        // Store context for use in closures
+        handlerContext = context
+        
         // Enable auto-read to ensure we receive all data
         let eventLoop = context.eventLoop
         context.channel.setOption(ChannelOptions.autoRead, value: true).whenFailure { [weak self] error in
             guard let self = self else { return }
             self.completePromise(with: .failure(error))
-            eventLoop.execute {
-                context.fireErrorCaught(error)
+            if let ctx = self.handlerContext {
+                eventLoop.execute {
+                    ctx.fireErrorCaught(error)
+                }
             }
         }
         
@@ -590,8 +825,10 @@ nonisolated private final class CommandOutputHandler: ChannelDuplexHandler {
         setOption.whenFailure { [weak self] error in
             guard let self = self else { return }
             self.completePromise(with: .failure(error))
-            eventLoop.execute {
-                context.fireErrorCaught(error)
+            if let ctx = self.handlerContext {
+                eventLoop.execute {
+                    ctx.fireErrorCaught(error)
+                }
             }
         }
     }
@@ -747,6 +984,38 @@ private func parseLsLongNative(_ data: Data, baseDirectory: String) -> [RemoteIt
         // Size is always at index 4 (5th field: perms, links, owner, group, SIZE, month, day, time)
         let size = parts.count > 4 ? (Int64(parts[4]) ?? 0) : 0
         
+        // Extract permissions string (convert symbolic to octal)
+        // Permissions are in the first field (e.g., "-rwxr-xr-x" or "drwxr-xr-x")
+        let permissionsString: String?
+        if perms.count >= 10 {
+            // Convert symbolic permissions to octal
+            // Format: -rwxrwxrwx (10 chars: type + 3 groups of 3)
+            let permsOnly = String(perms.dropFirst()) // Remove type char (d, -, l, etc.)
+            if permsOnly.count == 9 {
+                // Convert rwxrwxrwx to octal (e.g., rwxr-xr-x = 755)
+                func charToValue(_ char: Character) -> Int {
+                    switch char {
+                    case "r": return 4
+                    case "w": return 2
+                    case "x", "s", "t": return 1
+                    default: return 0
+                    }
+                }
+                let owner = permsOnly.prefix(3)
+                let group = permsOnly.dropFirst(3).prefix(3)
+                let other = permsOnly.suffix(3)
+                let ownerVal = owner.map(charToValue).reduce(0, +)
+                let groupVal = group.map(charToValue).reduce(0, +)
+                let otherVal = other.map(charToValue).reduce(0, +)
+                let octal = ownerVal * 100 + groupVal * 10 + otherVal
+                permissionsString = String(format: "%o", octal)
+            } else {
+                permissionsString = nil
+            }
+        } else {
+            permissionsString = nil
+        }
+        
         // Name starts at index 8 (after: perms, links, owner, group, size, month, day, time)
         // parts[0-7] are: perms, links, owner, group, size, month, day, time
         // parts[8+] is the filename (may have spaces, so join everything from index 8)
@@ -771,23 +1040,21 @@ private func parseLsLongNative(_ data: Data, baseDirectory: String) -> [RemoteIt
             path = name
         } else {
             // Relative path - combine with base directory
-            if baseDir.isEmpty {
-                path = "/\(name)"
+            if baseDir.isEmpty || baseDir == "/" {
+                // When baseDir is empty or "/", we're at the home directory (root listing)
+                // Use just the name (relative path) so it works correctly when navigating
+                // The full path will be constructed in openDirectory
+                path = name
             } else {
-                path = baseDir + name
+                // Normalize: ensure baseDir ends with / before appending name
+                // If baseDir starts with "/" (like "/bellsux.com"), keep it as-is for full path
+                let normalizedBase = baseDir.hasSuffix("/") ? baseDir : baseDir + "/"
+                path = normalizedBase + name
             }
         }
         
-        let item = RemoteItem(name: name, path: path, isDirectory: isDir, size: size)
+        let item = RemoteItem(name: name, path: path, isDirectory: isDir, size: size, permissions: permissionsString)
         items.append(item)
-        
-        // Debug: log large files and ubuntu file specifically
-        if size > 100_000_000 {
-            print("📁 Parsed large file: \(name) (\(size) bytes) -> path: \(path)")
-        }
-        if name.contains("ubuntu") {
-            print("🔍 Parsed ubuntu file: name='\(name)', path='\(path)', size=\(size), isDir=\(isDir)")
-        }
     }
     
     // Only log if there were actual parsing errors (not expected skips like . and ..)
@@ -1061,12 +1328,14 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
     
     private let command: String
     private let metadata: String
-    private let fileData: Data
+    private let localURL: URL
+    private let fileSize: Int64
+    private var fileHandle: FileHandle?
     private var completePromise: EventLoopPromise<Void>?
     private var progressCallback: ((Int64, Int64) -> Void)?
     private var state: SCPUploadState = .waitingForControlByte
-    private var bytesWritten = 0
-    private var bytesSent = 0 // Track bytes actually sent (for progress)
+    private var bytesWritten: Int64 = 0
+    private var bytesSent: Int64 = 0 // Track bytes actually sent (for progress)
     private var isCompleted = false
     private var isCancelled = false
     private var pendingWrites = 0 // Track number of pending write operations
@@ -1085,10 +1354,11 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
     
     private var handlerContext: ChannelHandlerContext?
     
-    init(command: String, metadata: String, fileData: Data, completePromise: EventLoopPromise<Void>, progressCallback: ((Int64, Int64) -> Void)? = nil) {
+    init(command: String, metadata: String, localURL: URL, fileSize: Int64, completePromise: EventLoopPromise<Void>, progressCallback: ((Int64, Int64) -> Void)? = nil) {
         self.command = command
         self.metadata = metadata
-        self.fileData = fileData
+        self.localURL = localURL
+        self.fileSize = fileSize
         self.completePromise = completePromise
         self.progressCallback = progressCallback
     }
@@ -1099,6 +1369,7 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
     
     func cancel() {
         isCancelled = true
+        closeFileHandle()
         // Close the channel to stop data transfer
         transferChannel?.close(promise: nil)
         completePromise(with: .failure(TransferError(message: "Transfer cancelled")))
@@ -1108,6 +1379,7 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
         guard !isCompleted, let promise = completePromise else { return }
         isCompleted = true
         completePromise = nil
+        closeFileHandle()
         
         switch result {
         case .success:
@@ -1183,12 +1455,12 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
                         if ackByte == 0 {
                             // Report initial progress (5% - metadata sent)
                             if let callback = progressCallback {
-                                callback(Int64(Double(fileData.count) * 0.05), Int64(fileData.count))
+                                callback(Int64(Double(fileSize) * 0.05), fileSize)
                             }
                             
                             // Start sending file data in chunks
                             state = .sendingFileData
-                            print("📤 SCP: Metadata ack received (0), sending \(fileData.count) bytes of file data in chunks")
+                            print("📤 SCP: Metadata ack received (0), sending \(fileSize) bytes of file data in chunks")
                             sendNextChunk(context: context)
                         } else {
                             // Server rejected metadata - ack byte 1 = error, 2 = fatal error
@@ -1216,15 +1488,15 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
                             // Report 100% progress - upload complete
                             // Only report if we haven't already reported 100%
                             if let callback = progressCallback, !hasReported100Percent {
-                                print("📊 SCP: Reporting 100% progress on final ack (\(fileData.count)/\(fileData.count) bytes)")
+                                print("📊 SCP: Reporting 100% progress on final ack (\(fileSize)/\(fileSize) bytes)")
                                 hasReported100Percent = true
-                                callback(Int64(fileData.count), Int64(fileData.count))
+                                callback(fileSize, fileSize)
                                 print("✅ SCP: 100% progress callback invoked on final ack")
                             } else if hasReported100Percent {
                                 print("⚠️ SCP: Already reported 100% on final ack, skipping")
                             }
                             state = .complete
-                            bytesWritten = fileData.count
+                            bytesWritten = fileSize
                             print("📤 SCP: File upload complete (\(bytesWritten) bytes), received final ack")
                             completePromise(with: .success(()))
                         } else {
@@ -1261,23 +1533,23 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
         print("🔒 SCP upload channel inactive, state=\(state), bytesWritten=\(bytesWritten), bytesSent=\(bytesSent), pendingWrites=\(pendingWrites)")
         if state == .complete {
             completePromise(with: .success(()))
-        } else if state == .waitingForFinalAck && bytesSent == fileData.count {
+        } else if state == .waitingForFinalAck && bytesSent == fileSize {
             // All data was sent, but we didn't receive final ack - still consider it success
             // (server may have closed connection after receiving data)
             print("⚠️ SCP upload: Channel closed after all data sent, treating as success")
             // Report 100% progress since upload completed successfully
             // Only report if we haven't already reported 100%
             if let callback = progressCallback, !hasReported100Percent {
-                print("📊 SCP: Reporting 100% progress on channel close (\(fileData.count)/\(fileData.count) bytes)")
+                print("📊 SCP: Reporting 100% progress on channel close (\(fileSize)/\(fileSize) bytes)")
                 hasReported100Percent = true
-                callback(Int64(fileData.count), Int64(fileData.count))
+                callback(fileSize, fileSize)
                 print("✅ SCP: 100% progress callback invoked on channel close")
             } else if hasReported100Percent {
                 print("⚠️ SCP: Already reported 100% on channel close, skipping")
             }
             completePromise(with: .success(()))
         } else {
-            let errorMsg = "SCP upload incomplete: state=\(state), bytesSent=\(bytesSent)/\(fileData.count), pendingWrites=\(pendingWrites)"
+            let errorMsg = "SCP upload incomplete: state=\(state), bytesSent=\(bytesSent)/\(fileSize), pendingWrites=\(pendingWrites)"
             print("❌ SCP upload failed: \(errorMsg)")
             completePromise(with: .failure(TransferError(message: errorMsg)))
         }
@@ -1303,16 +1575,16 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
             print("⚠️ SCP: sendNextChunk called but state is \(state)")
             return 
         }
-        guard bytesSent < fileData.count else {
+        guard bytesSent < fileSize else {
             // All data sent, now wait for final ack
             state = .waitingForFinalAck
             print("📤 SCP: All \(bytesSent) bytes sent, waiting for final ack")
             // Report 100% progress since all data has been successfully sent
             // Only report if we haven't already reported 100% (to prevent race conditions)
             if let callback = progressCallback, !hasReported100Percent {
-                print("📊 SCP: Reporting 100% progress (\(fileData.count)/\(fileData.count) bytes)")
+                print("📊 SCP: Reporting 100% progress (\(fileSize)/\(fileSize) bytes)")
                 hasReported100Percent = true
-                callback(Int64(fileData.count), Int64(fileData.count))
+                callback(fileSize, fileSize)
                 print("✅ SCP: 100% progress callback invoked")
             } else if hasReported100Percent {
                 print("⚠️ SCP: Already reported 100%, skipping duplicate update")
@@ -1327,7 +1599,7 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
                 eventLoop.scheduleTask(in: .seconds(2)) { [weak self] in
                     guard let self = self else { return }
                     // Check if we're still waiting and all data was sent
-                    if self.state == .waitingForFinalAck && self.bytesSent == self.fileData.count && !self.isCompleted {
+                    if self.state == .waitingForFinalAck && self.bytesSent == self.fileSize && !self.isCompleted {
                         print("⏰ SCP: Timeout waiting for final ack, completing upload (all data sent)")
                         self.state = .complete
                         self.completePromise(with: .success(()))
@@ -1346,13 +1618,23 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
         }
         
         // Calculate chunk size
-        let remaining = fileData.count - bytesSent
-        let currentChunkSize = min(chunkSize, remaining)
+        let remaining = fileSize - bytesSent
+        let requestedChunkSize = Int(min(Int64(chunkSize), remaining))
+        let chunkData: Data
+        do {
+            chunkData = try readNextChunk(maxLength: requestedChunkSize)
+        } catch {
+            print("❌ SCP upload: Failed to read local file chunk: \(error.localizedDescription)")
+            completePromise(with: .failure(error))
+            return
+        }
         
-        // Create buffer with chunk data
-        let startIndex = fileData.startIndex.advanced(by: bytesSent)
-        let endIndex = startIndex.advanced(by: currentChunkSize)
-        let chunkData = fileData[startIndex..<endIndex]
+        guard !chunkData.isEmpty else {
+            completePromise(with: .failure(TransferError(message: "Unexpected end of local file during upload.")))
+            return
+        }
+        
+        let currentChunkSize = chunkData.count
         
         var dataBuffer = context.channel.allocator.buffer(capacity: currentChunkSize)
         dataBuffer.writeBytes(chunkData)
@@ -1368,29 +1650,29 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
             
             switch result {
             case .success:
-                self.bytesSent += currentChunkSize
-                let percent = Int(Double(self.bytesSent) / Double(self.fileData.count) * 100)
-                print("✅ SCP: Chunk sent successfully, progress: \(self.bytesSent)/\(self.fileData.count) (\(percent)%)")
+                self.bytesSent += Int64(currentChunkSize)
+                let percent = self.fileSize > 0 ? Int(Double(self.bytesSent) / Double(self.fileSize) * 100) : 100
+                print("✅ SCP: Chunk sent successfully, progress: \(self.bytesSent)/\(self.fileSize) (\(percent)%)")
                 
                 // Check if all bytes are now sent
-                let allBytesSent = self.bytesSent >= self.fileData.count
+                let allBytesSent = self.bytesSent >= self.fileSize
                 
                 // Report progress based on bytes actually sent
                 // Only report if we haven't already reported 100% (to prevent race conditions)
                 if let callback = self.progressCallback, !self.hasReported100Percent {
                     if allBytesSent {
                         // All bytes sent - report 100% immediately and set flag
-                        print("📊 SCP: All bytes sent in chunk completion, reporting 100% (\(self.fileData.count)/\(self.fileData.count))")
+                        print("📊 SCP: All bytes sent in chunk completion, reporting 100% (\(self.fileSize)/\(self.fileSize))")
                         self.hasReported100Percent = true
-                        callback(Int64(self.fileData.count), Int64(self.fileData.count))
+                        callback(self.fileSize, self.fileSize)
                         print("✅ SCP: 100% progress reported, flag set to prevent overwrites")
                     } else {
                         // Report progress based on bytes sent, but cap at 99% to leave room for final 100%
-                        let progress = Double(self.bytesSent) / Double(self.fileData.count)
+                        let progress = Double(self.bytesSent) / Double(self.fileSize)
                         // Scale to 5%-99% (instead of 5%-95%) to get closer to 100% before completion
                         let adjustedProgress = 0.05 + (progress * 0.94) // Scale to 5%-99%
-                        let adjustedBytes = Int64(Double(self.fileData.count) * adjustedProgress)
-                        callback(adjustedBytes, Int64(self.fileData.count))
+                        let adjustedBytes = Int64(Double(self.fileSize) * adjustedProgress)
+                        callback(adjustedBytes, self.fileSize)
                     }
                 } else if self.hasReported100Percent {
                     print("⚠️ SCP: Skipping progress update - already reported 100%")
@@ -1412,8 +1694,22 @@ nonisolated private final class SCPUploadHandler: ChannelDuplexHandler, Cancella
         
         // Always flush to ensure data is actually sent and progress is tracked accurately
         // For very large files, buffering without flushing can cause the transfer to appear stuck
-        print("📤 SCP: Sending chunk (will be \(bytesSent / chunkSize + 1)), size: \(currentChunkSize) bytes, progress: \(Int64(bytesSent))/\(fileData.count) (\(Int(Double(bytesSent) / Double(fileData.count) * 100))%)")
+        let percent = fileSize > 0 ? Int(Double(bytesSent) / Double(fileSize) * 100) : 100
+        print("📤 SCP: Sending chunk (will be \(bytesSent / Int64(chunkSize) + 1)), size: \(currentChunkSize) bytes, progress: \(bytesSent)/\(fileSize) (\(percent)%)")
         context.writeAndFlush(self.wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(dataBuffer))), promise: writePromise)
+    }
+    
+    private func readNextChunk(maxLength: Int) throws -> Data {
+        if fileHandle == nil {
+            fileHandle = try FileHandle(forReadingFrom: localURL)
+        }
+        
+        return try fileHandle?.read(upToCount: maxLength) ?? Data()
+    }
+    
+    private func closeFileHandle() {
+        try? fileHandle?.close()
+        fileHandle = nil
     }
 }
 

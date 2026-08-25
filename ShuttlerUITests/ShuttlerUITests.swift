@@ -30,6 +30,16 @@ final class ShuttlerUITests: XCTestCase {
 
         // Use XCTAssert and related functions to verify your tests produce the correct results.
     }
+    
+    @MainActor
+    func testTransferStartOpensTransfersWindow() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["SHUTTLER_UI_TEST_START_TRANSFER"] = "1"
+        app.launch()
+        
+        XCTAssertTrue(app.windows["Transfers"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Automation Transfer"].waitForExistence(timeout: 5))
+    }
 
     @MainActor
     func testLaunchPerformance() throws {

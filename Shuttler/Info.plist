@@ -2,38 +2,68 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>com.example.plain-text</string>
-			</array>
-			<key>NSUbiquitousDocumentUserActivityType</key>
-			<string>$(PRODUCT_BUNDLE_IDENTIFIER).exampledocument</string>
-		</dict>
-	</array>
-	<key>UTImportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.plain-text</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Example Text</string>
-			<key>UTTypeIdentifier</key>
-			<string>com.example.plain-text</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>exampletext</string>
-				</array>
-			</dict>
-		</dict>
-	</array>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.5</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.example.plain-text</string>
+            </array>
+            <key>NSUbiquitousDocumentUserActivityType</key>
+            <string>$(PRODUCT_BUNDLE_IDENTIFIER).exampledocument</string>
+        </dict>
+    </array>
+
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Shuttler Remote Item</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.finalreality.shuttler.remote-item</string>
+        </dict>
+    </array>
+
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Example Text</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.example.plain-text</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>exampletext</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+
+    <!-- Ensure the app appears in Dock and App Switcher -->
+    <key>LSUIElement</key>
+    <false/>
+    <key>LSBackgroundOnly</key>
+    <false/>
+    
+    <!-- Local Network Access Description for macOS -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Shuttler needs access to your local network to connect to FTP, SFTP, and SCP servers.</string>
 </dict>
 </plist>

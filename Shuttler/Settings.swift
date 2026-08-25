@@ -21,7 +21,7 @@ enum OverwriteBehavior: String, CaseIterable, Identifiable {
     }
 }
 
-enum ProtocolType: String, CaseIterable, Identifiable {
+enum TransferProtocol: String, CaseIterable, Identifiable {
     case ftp
     case sftp
     case ftps
@@ -36,6 +36,20 @@ enum ProtocolType: String, CaseIterable, Identifiable {
     }
 }
 
+enum SortKey: String, CaseIterable, Identifiable {
+    case name
+    case size
+    case kind
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .name: return "Name"
+        case .size: return "Size"
+        case .kind: return "Kind"
+        }
+    }
+}
+
 struct AppSettingsKeys {
     static let listDensity = "settings.listDensity"
     static let defaultProtocol = "settings.defaultProtocol"
@@ -44,24 +58,33 @@ struct AppSettingsKeys {
     static let overwriteBehavior = "settings.overwriteBehavior"
     static let sshKeyPath = "settings.sshKeyPath"
     static let commandTimeout = "settings.commandTimeout"
+
+    static let sortKey = "settings.sortKey"
+    static let sortAscending = "settings.sortAscending"
+    static let foldersFirst = "settings.foldersFirst"
+    static let sidebarVisible = "settings.sidebarVisible"
 }
 
 struct SettingsModel {
     @AppStorage(AppSettingsKeys.listDensity) var listDensityRaw: String = ListDensity.comfortable.rawValue
-    @AppStorage(AppSettingsKeys.defaultProtocol) var defaultProtocolRaw: String = ProtocolType.sftp.rawValue
+    @AppStorage(AppSettingsKeys.defaultProtocol) var defaultProtocolRaw: String = TransferProtocol.sftp.rawValue
     @AppStorage(AppSettingsKeys.transferConcurrency) var transferConcurrency: Int = 3
     @AppStorage(AppSettingsKeys.defaultDownloadFolder) var defaultDownloadFolder: String = NSSearchPathForDirectoriesInDomains(.downloadsDirectory, .userDomainMask, true).first ?? "~/Downloads"
     @AppStorage(AppSettingsKeys.overwriteBehavior) var overwriteBehaviorRaw: String = OverwriteBehavior.ask.rawValue
     @AppStorage(AppSettingsKeys.sshKeyPath) var sshKeyPath: String = ""
     @AppStorage(AppSettingsKeys.commandTimeout) var commandTimeout: Double = 30
 
+    @AppStorage(AppSettingsKeys.sortKey) var sortKeyRaw: String = SortKey.name.rawValue
+    @AppStorage(AppSettingsKeys.sortAscending) var sortAscending: Bool = true
+    @AppStorage(AppSettingsKeys.foldersFirst) var foldersFirst: Bool = true
+
     var listDensity: ListDensity {
         get { ListDensity(rawValue: listDensityRaw) ?? .comfortable }
         set { listDensityRaw = newValue.rawValue }
     }
 
-    var defaultProtocol: ProtocolType {
-        get { ProtocolType(rawValue: defaultProtocolRaw) ?? .sftp }
+    var defaultProtocol: TransferProtocol {
+        get { TransferProtocol(rawValue: defaultProtocolRaw) ?? .sftp }
         set { defaultProtocolRaw = newValue.rawValue }
     }
 
@@ -69,4 +92,10 @@ struct SettingsModel {
         get { OverwriteBehavior(rawValue: overwriteBehaviorRaw) ?? .ask }
         set { overwriteBehaviorRaw = newValue.rawValue }
     }
+
+    var sortKey: SortKey {
+        get { SortKey(rawValue: sortKeyRaw) ?? .name }
+        set { sortKeyRaw = newValue.rawValue }
+    }
 }
+

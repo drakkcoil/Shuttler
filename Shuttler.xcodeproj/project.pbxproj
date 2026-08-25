@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		396A5D0E2EED1892001337C1 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 396A5D0D2EED1892001337C1 /* NIOSSH */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		3920BAAF2EEC54E2005F3A3E /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -65,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				396A5D0E2EED1892001337C1 /* NIOSSH in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,8 +129,6 @@
 				3920BAA02EEC54E0005F3A3E /* Shuttler */,
 			);
 			name = Shuttler;
-			packageProductDependencies = (
-			);
 			productName = Shuttler;
 			productReference = 3920BA9E2EEC54E0005F3A3E /* Shuttler.app */;
 			productType = "com.apple.product-type.application";
@@ -147,8 +150,6 @@
 				3920BAB12EEC54E2005F3A3E /* ShuttlerTests */,
 			);
 			name = ShuttlerTests;
-			packageProductDependencies = (
-			);
 			productName = ShuttlerTests;
 			productReference = 3920BAAE2EEC54E2005F3A3E /* ShuttlerTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -170,8 +171,6 @@
 				3920BABB2EEC54E2005F3A3E /* ShuttlerUITests */,
 			);
 			name = ShuttlerUITests;
-			packageProductDependencies = (
-			);
 			productName = ShuttlerUITests;
 			productReference = 3920BAB82EEC54E2005F3A3E /* ShuttlerUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -208,6 +207,9 @@
 			);
 			mainGroup = 3920BA952EEC54E0005F3A3E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				396A5D0C2EED1892001337C1 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 3920BA9F2EEC54E0005F3A3E /* Products */;
 			projectDirPath = "";
@@ -286,7 +288,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Shuttler/Shuttler.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -297,12 +302,14 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Shuttler/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Shuttler;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.5;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.Shuttler;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -319,7 +326,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_ENTITLEMENTS = Shuttler/Shuttler.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -330,12 +340,14 @@
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Shuttler/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Shuttler;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.5;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.Shuttler;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -477,7 +489,7 @@
 				DEVELOPMENT_TEAM = 7SYQNXG5YJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.ShuttlerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -498,7 +510,7 @@
 				DEVELOPMENT_TEAM = 7SYQNXG5YJ;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.1;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.ShuttlerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -517,7 +529,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7SYQNXG5YJ;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.ShuttlerUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -536,7 +548,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7SYQNXG5YJ;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = FinalReality.ShuttlerUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -588,6 +600,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		396A5D0C2EED1892001337C1 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.12.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		396A5D0D2EED1892001337C1 /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 396A5D0C2EED1892001337C1 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 3920BA962EEC54E0005F3A3E /* Project object */;
 }

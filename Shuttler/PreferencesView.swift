@@ -18,14 +18,14 @@ struct PreferencesView: View {
                         Label("Appearance", systemImage: "paintbrush")
                     }
             }
-            .padding()
+            .padding(AppTheme.Spacing.m)
             .frame(minWidth: 420, minHeight: 200)
             .navigationTitle("Preferences")
         }
     }
 
     private var generalView: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.m) {
             Toggle("Folders first", isOn: $foldersFirst)
             Toggle("Sort ascending", isOn: $sortAscending)
             Picker("Sort by", selection: $sortKeyRaw) {
@@ -36,11 +36,11 @@ struct PreferencesView: View {
             .pickerStyle(.segmented)
             Spacer()
         }
-        .padding()
+        .padding(AppTheme.Spacing.m)
     }
 
     private var appearanceView: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.m) {
             Picker("List Density", selection: $listDensityRaw) {
                 Text("Comfortable").tag(ListDensity.comfortable.rawValue)
                 Text("Compact").tag(ListDensity.compact.rawValue)
@@ -48,7 +48,7 @@ struct PreferencesView: View {
             .pickerStyle(.segmented)
             Spacer()
         }
-        .padding()
+        .padding(AppTheme.Spacing.m)
     }
 }
 

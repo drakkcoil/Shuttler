@@ -3,8 +3,8 @@ import SwiftUI
 enum AppTheme {
     // Brand colors
     static let tint = Color.accentColor
-    static let gradientTop = Color.blue.opacity(0.35)
-    static let gradientBottom = Color.indigo.opacity(0.55)
+    static let gradientTop = Color.primary.opacity(0.04)
+    static let gradientBottom = Color.secondary.opacity(0.08)
 
     // Spacing scale
     enum Spacing {
@@ -18,7 +18,7 @@ enum AppTheme {
     }
 
     // Typography helpers
-    enum Type {
+    enum Typography {
         static func title(_ text: String) -> some View {
             Text(text).font(.largeTitle.bold())
         }
